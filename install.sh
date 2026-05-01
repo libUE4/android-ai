@@ -1,12 +1,13 @@
 #!/bin/bash
 # ============================================================
-# Termux AI 编程工具一键安装脚本 (Final)
+# Termux AI 编程工具一键安装脚本 (GitHub 最终版)
+# 功能：国内镜像选择 + proot-distro Debian + Claude Code + 第三方平台配置
 # 修复：
-#   1. 官方 Claude/Codex 只安装不配置 Key
-#   2. DeepSeek 自动获取模型列表，失败跳过
-#   3. 二进制直接复制到 /usr/local/bin/，永不丢失
-#   4. info 输出到 stderr，避免被 grep 捕获
-#   5. 添加 ai-fix 修复命令
+#   1. npm install 崩溃 → 使用 --ignore-scripts + 手动下载二进制
+#   2. 二进制丢失 → 直接复制到 /usr/local/bin/
+#   3. 模型获取被 grep 污染 → info 输出到 stderr
+#   4. Auth 冲突 → 只用 ANTHROPIC_AUTH_TOKEN，不用 API_KEY
+#   5. 平台不兼容 → 支持任意 OpenAI/Anthropic 兼容平台，自动获取模型
 # ============================================================
 
 set -e
@@ -115,19 +116,17 @@ safe_read_key() {
     eval "$varname=\"$key\""
 }
 
-# 获取 DeepSeek 可用模型，失败返回空
-fetch_deepseek_models() {
-    local api_key="$1"
+# 获取第三方平台可用模型
+fetch_models() {
+    local base_url="$1"
+    local api_key="$2"
     local models=""
     if [ -n "$api_key" ] && command -v curl &>/dev/null; then
-        # 输出到 stderr，避免被 resp 变量捕获
-        info "正在获取 DeepSeek 可用模型..." >&2
-
+        info "正在获取可用模型..." >&2
         local resp
-        resp=$(curl -s -m 10 "https://api.deepseek.com/models" \
+        resp=$(curl -s -m 15 "${base_url}/models" \
             -H "Authorization: Bearer $api_key" \
             -H "Content-Type: application/json" 2>/dev/null) || true
-
         if [ -n "$resp" ]; then
             models=$(echo "$resp" | grep -oP '"id":\s*"\K[^"]+' 2>/dev/null | sort -u | tr '\n' ' ')
         fi
@@ -163,7 +162,7 @@ echo ""
 echo "  选择工具（可多选）:"
 echo "  [1] Claude Code (官方)  -- 只安装，不配置 Key"
 echo "  [2] Codex CLI (OpenAI)  -- 只安装，不配置 Key"
-echo "  [3] Claude + DeepSeek   -- 安装 + 配置 DeepSeek Key"
+echo "  [3] Claude + 第三方平台  -- 安装 + 配置平台 Key"
 echo "  [4] 全部安装"
 read -p "  输入: " choices
 
@@ -174,37 +173,55 @@ case "$choices" in *3*) D=true ;; esac
 case "$choices" in *4*) C=true;X=true;D=true ;; esac
 [ "$C" = false ] && [ "$X" = false ] && [ "$D" = false ] && { err "未选择"; exit 1; }
 
+# ==================== 安装 Claude Code ====================
 if [ "$C" = true ] || [ "$D" = true ]; then
   echo ""; step "安装 Claude Code..."
-  npm install -g @anthropic-ai/claude-code
 
-  # 直接下载二进制到 /usr/local/bin/（复制而非符号链接，永不丢失）
-  V=$(curl -sL "https://downloads.claude.ai/claude-code-releases/stable")
+  # 只装 npm 包（不触发 postinstall，避免崩溃）
+  npm install -g @anthropic-ai/claude-code --ignore-scripts
+
+  # 手动下载二进制（绕过平台检测 + 避免 npm postinstall 崩溃）
+  V=$(curl -sL --max-time 10 "https://downloads.claude.ai/claude-code-releases/stable" || echo "2.1.118")
   info "版本: $V"
-  curl -L -o /usr/local/bin/claude-bin \
-    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
-  chmod +x /usr/local/bin/claude-bin
 
+  mkdir -p /usr/local/bin
+  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
+    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
+  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
+    "https://ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
+  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
+    "https://mirror.ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null
+
+  if [ ! -f /usr/local/bin/claude-bin ] || [ ! -s /usr/local/bin/claude-bin ]; then
+    err "Claude 二进制下载失败"
+    echo ""
+    echo "请手动下载："
+    echo "  1. 手机浏览器打开："
+    echo "     https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
+    echo "  2. 放到手机 Download 文件夹"
+    echo "  3. 执行：termux-setup-storage"
+    echo "  4. 执行：cp ~/storage/downloads/claude /usr/local/bin/claude-bin"
+    echo "  5. 执行：chmod +x /usr/local/bin/claude-bin"
+    echo ""
+    exit 1
+  fi
+
+  chmod +x /usr/local/bin/claude-bin
   echo '{"hasCompletedOnboarding":true}' > ~/.claude.json
   ok "Claude Code: $(claude-bin --version)"
 fi
 
+# ==================== 安装 Codex CLI ====================
 if [ "$X" = true ]; then
   echo ""; step "安装 Codex CLI..."
-  npm install -g @openai/codex
 
-  # 直接下载二进制到 /usr/local/bin/（复制而非符号链接）
-  T=$(curl -sL "https://api.github.com/repos/openai/codex/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-  info "版本: $T"
-  curl -L -o /tmp/codex.tar.gz \
-    "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
-  tar -xzf /tmp/codex.tar.gz -C /usr/local/bin --strip-components=1
-  chmod +x /usr/local/bin/codex
-  rm -f /tmp/codex.tar.gz
-  ln -sf /usr/local/bin/codex /usr/local/bin/codex-fast
+  # 官方 install.sh 最稳
+  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
+  export PATH="/root/.local/bin:$PATH"
   ok "Codex CLI 安装完成"
 fi
 
+# ==================== 配置 API Key ====================
 echo ""; step "配置 API Key..."
 cp ~/.bashrc ~/.bashrc.bak.$(date +%s) 2>/dev/null || true
 sed -i '/# === AI CFG ===/,/# === END ===/d' ~/.bashrc 2>/dev/null || true
@@ -215,65 +232,66 @@ if [ "$C" = true ]; then
   info "Claude Code (官方) 已安装，首次运行请自行登录"
 fi
 
-# DeepSeek：需要配置 Key
+# 第三方平台配置
 if [ "$D" = true ]; then
-  echo ""; info "DeepSeek 配置"
-  echo "  获取 Key: https://platform.deepseek.com/api_keys"
-  safe_read_key "  请输入 DeepSeek Key: " deepseek_key
+  echo ""; info "第三方平台配置"
+  echo "  示例: https://tokenshengsheng.com"
+  echo "  示例: https://api.deepseek.com"
+  read -p "  请输入 API Base URL: " base_url
+  [ -z "$base_url" ] && { err "URL 不能为空"; exit 1; }
 
-  if [ -n "$deepseek_key" ]; then
-    MODELS=$(fetch_deepseek_models "$deepseek_key")
+  safe_read_key "  请输入 API Key: " api_key
+  [ -z "$api_key" ] && { err "Key 不能为空"; exit 1; }
 
-    if [ -z "$MODELS" ]; then
-      warn "无法从 DeepSeek API 获取模型列表"
-      warn "可能原因: Key 无效 / 网络问题 / API 限制"
-      warn "已跳过 DeepSeek 自动配置"
-      warn "安装完成后可手动编辑 ~/.bashrc 配置"
-    else
-      echo ""
-      echo "  可用模型列表:"
-      i=1
-      SELECTED_MODELS=()
-      for m in $MODELS; do
-        echo "    [$i] $m"
-        SELECTED_MODELS+=("$m")
-        ((i++))
-      done
+  # 自动获取模型
+  MODELS=$(fetch_models "$base_url" "$api_key")
 
-      echo ""
-      read -p "  请选择模型编号 [1-$((i-1)), 默认1]: " model_idx
-
-      if [ -z "$model_idx" ] || ! [[ "$model_idx" =~ ^[0-9]+$ ]] || [ "$model_idx" -lt 1 ] || [ "$model_idx" -ge "$i" ]; then
-        model_idx=1
-      fi
-
-      M="${SELECTED_MODELS[$((model_idx-1))]}"
-      ok "选择的模型: $M"
-
-      CFG+="export ANTHROPIC_BASE_URL=\"https://api.deepseek.com/anthropic\"\n"
-      CFG+="export ANTHROPIC_AUTH_TOKEN=\"$deepseek_key\"\n"
-      CFG+="export ANTHROPIC_MODEL=\"$M\"\n"
-      CFG+="export ANTHROPIC_DEFAULT_OPUS_MODEL=\"$M\"\n"
-      CFG+="export ANTHROPIC_DEFAULT_SONNET_MODEL=\"$M\"\n"
-      CFG+="export ANTHROPIC_DEFAULT_HAIKU_MODEL=\"$M\"\n"
-      CFG+="export CLAUDE_CODE_SUBAGENT_MODEL=\"$M\"\n"
-      CFG+="export CLAUDE_CODE_EFFORT_LEVEL=\"max\"\n"
-      ok "DeepSeek 配置完成"
-    fi
+  if [ -z "$MODELS" ]; then
+    warn "无法自动获取模型列表"
+    read -p "  请手动输入模型名称: " M
+    [ -z "$M" ] && M="default"
   else
-    warn "未输入 Key，跳过 DeepSeek 配置"
+    echo ""
+    echo "  可用模型列表:"
+    i=1
+    ARR=()
+    for m in $MODELS; do
+      echo "    [$i] $m"
+      ARR+=("$m")
+      ((i++))
+    done
+    echo ""
+    read -p "  请选择模型编号 [1-$((i-1)), 默认1]: " idx
+    [ -z "$idx" ] && idx=1
+    [[ "$idx" =~ ^[0-9]+$ ]] || idx=1
+    [ "$idx" -lt 1 ] && idx=1
+    [ "$idx" -ge "$i" ] && idx=1
+    M="${ARR[$((idx-1))]}"
+    ok "选择的模型: $M"
   fi
+
+  # 写入配置（只用 AUTH_TOKEN，避免与 API_KEY 冲突）
+  CFG+="export ANTHROPIC_BASE_URL=\"$base_url\"\n"
+  CFG+="export ANTHROPIC_AUTH_TOKEN=\"$api_key\"\n"
+  CFG+="export ANTHROPIC_MODEL=\"$M\"\n"
+  CFG+="export ANTHROPIC_DEFAULT_OPUS_MODEL=\"$M\"\n"
+  CFG+="export ANTHROPIC_DEFAULT_SONNET_MODEL=\"$M\"\n"
+  CFG+="export ANTHROPIC_DEFAULT_HAIKU_MODEL=\"$M\"\n"
+  CFG+="export CLAUDE_CODE_SUBAGENT_MODEL=\"$M\"\n"
+  CFG+="export CLAUDE_CODE_EFFORT_LEVEL=\"max\"\n"
+  ok "第三方平台配置完成"
 fi
 
 # Codex：只安装，不配置 Key
 if [ "$X" = true ]; then
-  info "Codex CLI 已安装，首次运行请执行: codex-fast login"
+  info "Codex CLI 已安装，首次运行请执行: codex login"
 fi
 
 CFG+="# === END ===\n"
 echo -e "$CFG" >> ~/.bashrc
 source ~/.bashrc
 
+# ==================== 创建启动器 ====================
 echo ""; step "创建启动器..."
 cat > /usr/local/bin/ai-start << 'START'
 #!/bin/bash
@@ -283,26 +301,25 @@ echo "========================================"
 echo -e "${C}     AI 工具启动器${N}"
 echo "========================================"
 echo ""
-HC=false;HX=false;HD=false;HK=false
+HC=false;HX=false;HD=false
 command -v claude-bin &>/dev/null && HC=true
-command -v codex-fast &>/dev/null && HX=true
+command -v codex &>/dev/null && HX=true
 [ -n "$ANTHROPIC_BASE_URL" ] && HD=true
-[ -n "$ANTHROPIC_API_KEY" ] && HK=true
 [ "$HC" = true ] && echo "  v Claude Code"
 [ "$HX" = true ] && echo "  v Codex CLI"
-[ "$HD" = true ] && echo "  v DeepSeek"
+[ "$HD" = true ] && echo "  v 第三方平台"
 echo ""
 i=1
-[ "$HC" = true ] && [ "$HK" = true ] && { echo "  [$i] Claude(官方)";((i++)); }
-[ "$HD" = true ] && { echo "  [$i] Claude(DeepSeek)";((i++)); }
+[ "$HC" = true ] && [ "$HD" = false ] && { echo "  [$i] Claude(官方)";((i++)); }
+[ "$HD" = true ] && { echo "  [$i] Claude(第三方)";((i++)); }
 [ "$HX" = true ] && { echo "  [$i] Codex CLI";((i++)); }
 echo "  [0] 退出"
 echo ""
 read -p "  选择: " ch
 i=1
-[ "$HC" = true ] && [ "$HK" = true ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
+[ "$HC" = true ] && [ "$HD" = false ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
 [ "$HD" = true ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
-[ "$HX" = true ] && { [ "$ch" = "$i" ] && { codex-fast;exit; };((i++)); }
+[ "$HX" = true ] && { [ "$ch" = "$i" ] && { codex;exit; };((i++)); }
 [ "$ch" = "0" ] && exit
 echo -e "${Y}无效选择${N}"
 START
@@ -316,19 +333,17 @@ echo "  AI 工具更新"
 echo "========================================"
 if command -v claude-bin &>/dev/null; then
   echo "[1/2] 更新 Claude..."
-  V=$(curl -sL "https://downloads.claude.ai/claude-code-releases/stable")
-  curl -L -o /usr/local/bin/claude-bin \
-    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
-  chmod +x /usr/local/bin/claude-bin
-  echo "  $(claude-bin --version)"
+  V=$(curl -sL --max-time 10 "https://downloads.claude.ai/claude-code-releases/stable" || echo "2.1.118")
+  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
+    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
+  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
+    "https://ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null
+  chmod +x /usr/local/bin/claude-bin 2>/dev/null || true
+  echo "  $(claude-bin --version 2>/dev/null || echo "失败")"
 fi
-if command -v codex-fast &>/dev/null; then
+if command -v codex &>/dev/null; then
   echo "[2/2] 更新 Codex..."
-  T=$(curl -sL "https://api.github.com/repos/openai/codex/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-  curl -L -o /tmp/codex.tar.gz \
-    "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
-  tar -xzf /tmp/codex.tar.gz -C /usr/local/bin --strip-components=1
-  chmod +x /usr/local/bin/codex;rm -f /tmp/codex.tar.gz
+  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
   echo "  完成"
 fi
 echo "========================================"
@@ -342,21 +357,19 @@ cat > /usr/local/bin/ai-fix << 'FIX'
 echo "========================================"
 echo "  AI 工具修复"
 echo "========================================"
-if [ ! -f /usr/local/bin/claude-bin ]; then
+if [ ! -f /usr/local/bin/claude-bin ] || [ ! -s /usr/local/bin/claude-bin ]; then
   echo "[修复] Claude Code..."
-  V=$(curl -sL "https://downloads.claude.ai/claude-code-releases/stable")
-  curl -L -o /usr/local/bin/claude-bin \
-    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
-  chmod +x /usr/local/bin/claude-bin
-  echo "  $(claude-bin --version)"
+  V=$(curl -sL --max-time 10 "https://downloads.claude.ai/claude-code-releases/stable" || echo "2.1.118")
+  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
+    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
+  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
+    "https://ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null
+  chmod +x /usr/local/bin/claude-bin 2>/dev/null || true
+  echo "  $(claude-bin --version 2>/dev/null || echo "失败")"
 fi
-if [ ! -f /usr/local/bin/codex ]; then
+if [ ! -f /root/.local/bin/codex ] && [ ! -f /usr/local/bin/codex ]; then
   echo "[修复] Codex CLI..."
-  T=$(curl -sL "https://api.github.com/repos/openai/codex/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-  curl -L -o /tmp/codex.tar.gz \
-    "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
-  tar -xzf /tmp/codex.tar.gz -C /usr/local/bin --strip-components=1
-  chmod +x /usr/local/bin/codex;rm -f /tmp/codex.tar.gz
+  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
   echo "  完成"
 fi
 echo "========================================"
@@ -372,15 +385,11 @@ echo "========================================"
 echo ""
 echo "  可用命令:"
 [ "$C" = true ] && echo "    claude-bin    - Claude Code (官方，首次运行自行登录)"
-[ "$X" = true ] && echo "    codex-fast    - Codex CLI (首次运行 codex-fast login)"
-[ "$D" = true ] && echo "    claude-bin    - Claude Code (DeepSeek)"
+[ "$X" = true ] && echo "    codex         - Codex CLI (首次运行 codex login)"
+[ "$D" = true ] && echo "    claude-bin    - Claude Code (第三方平台)"
 echo "    ai-start      - 交互式启动菜单"
 echo "    ai-update     - 更新所有工具"
 echo "    ai-fix        - 修复丢失的工具"
-echo ""
-echo "  手动配置 DeepSeek:"
-echo "    nano ~/.bashrc"
-echo "    添加: export ANTHROPIC_AUTH_TOKEN=\"你的Key\""
 echo ""
 echo "  重新进入:"
 echo "    proot-distro login debian"
@@ -396,7 +405,7 @@ chmod +x "$DEBIAN_ROOT/tmp/install.sh"
 ok "脚本已准备"
 
 echo ""; step "进入 Debian 安装..."
-info "按提示选择工具"
+info "按提示选择工具和输入信息"
 read -p "按回车继续..."
 proot-distro login debian -- bash /tmp/install.sh
 
