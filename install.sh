@@ -1,6 +1,5 @@
 #!/bin/bash
-# ============================================================
-# Termux AI 编程工具一键安装脚本
+
 set -e
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -24,7 +23,7 @@ safe_read_key() {
         echo ""
     else
         echo ""
-        echo -e "${Y}[注意] 不支持隐藏输入${N}"
+        echo -e "${Y}[注意] 当前环境不支持隐藏输入${N}"
         echo -n "$prompt"
         read key
     fi
@@ -111,21 +110,21 @@ safe_read_key() {
 fetch_deepseek_models() {
     local api_key="$1"
     local models=""
-    
     if [ -n "$api_key" ] && command -v curl &>/dev/null; then
+        # 输出到 stderr，避免被 resp 变量捕获
+        info "正在获取 DeepSeek 可用模型..." >&2
+
         local resp
         resp=$(curl -s -m 10 "https://api.deepseek.com/models" \
             -H "Authorization: Bearer $api_key" \
             -H "Content-Type: application/json" 2>/dev/null) || true
-        
+
         if [ -n "$resp" ]; then
             models=$(echo "$resp" | grep -oP '"id":\s*"\K[^"]+' 2>/dev/null | sort -u | tr '\n' ' ')
         fi
     fi
-    
     echo "$models"
 }
-
 
 step "配置软件源..."
 if [ -n "APT_URL_PLACEHOLDER" ]; then
@@ -169,13 +168,14 @@ case "$choices" in *4*) C=true;X=true;D=true ;; esac
 if [ "$C" = true ] || [ "$D" = true ]; then
   echo ""; step "安装 Claude Code..."
   npm install -g @anthropic-ai/claude-code
-  CD="$(npm root -g)/@anthropic-ai/claude-code"
+
+  # 直接下载二进制到 /usr/local/bin/（复制而非符号链接，永不丢失）
   V=$(curl -sL "https://downloads.claude.ai/claude-code-releases/stable")
   info "版本: $V"
-  mkdir -p "$CD/bin"
-  curl -L -o "$CD/bin/claude" "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
-  chmod +x "$CD/bin/claude"
-  ln -sf "$CD/bin/claude" /usr/local/bin/claude-bin
+  curl -L -o /usr/local/bin/claude-bin \
+    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
+  chmod +x /usr/local/bin/claude-bin
+
   echo '{"hasCompletedOnboarding":true}' > ~/.claude.json
   ok "Claude Code: $(claude-bin --version)"
 fi
@@ -183,14 +183,16 @@ fi
 if [ "$X" = true ]; then
   echo ""; step "安装 Codex CLI..."
   npm install -g @openai/codex
-  XD="$(npm root -g)/@openai/codex"
+
+  # 直接下载二进制到 /usr/local/bin/（复制而非符号链接）
   T=$(curl -sL "https://api.github.com/repos/openai/codex/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
   info "版本: $T"
-  mkdir -p "$XD/bin"
-  curl -L -o /tmp/codex.tar.gz "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
-  tar -xzf /tmp/codex.tar.gz -C "$XD/bin" --strip-components=1
-  chmod +x "$XD/bin/codex"; rm -f /tmp/codex.tar.gz
-  ln -sf "$XD/bin/codex" /usr/local/bin/codex-fast
+  curl -L -o /tmp/codex.tar.gz \
+    "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
+  tar -xzf /tmp/codex.tar.gz -C /usr/local/bin --strip-components=1
+  chmod +x /usr/local/bin/codex
+  rm -f /tmp/codex.tar.gz
+  ln -sf /usr/local/bin/codex /usr/local/bin/codex-fast
   ok "Codex CLI 安装完成"
 fi
 
@@ -289,7 +291,7 @@ echo "  [0] 退出"
 echo ""
 read -p "  选择: " ch
 i=1
-[ "$HC" = true ] && [ "$HK" = true ] && { [ "$ch" = "$i" ] && { unset A B;claude-bin;exit; };((i++)); }
+[ "$HC" = true ] && [ "$HK" = true ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
 [ "$HD" = true ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
 [ "$HX" = true ] && { [ "$ch" = "$i" ] && { codex-fast;exit; };((i++)); }
 [ "$ch" = "0" ] && exit
@@ -305,19 +307,19 @@ echo "  AI 工具更新"
 echo "========================================"
 if command -v claude-bin &>/dev/null; then
   echo "[1/2] 更新 Claude..."
-  D="$(npm root -g)/@anthropic-ai/claude-code"
   V=$(curl -sL "https://downloads.claude.ai/claude-code-releases/stable")
-  curl -L -o "$D/bin/claude" "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
-  chmod +x "$D/bin/claude"
+  curl -L -o /usr/local/bin/claude-bin \
+    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
+  chmod +x /usr/local/bin/claude-bin
   echo "  $(claude-bin --version)"
 fi
 if command -v codex-fast &>/dev/null; then
   echo "[2/2] 更新 Codex..."
-  D="$(npm root -g)/@openai/codex"
   T=$(curl -sL "https://api.github.com/repos/openai/codex/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-  curl -L -o /tmp/codex.tar.gz "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
-  tar -xzf /tmp/codex.tar.gz -C "$D/bin" --strip-components=1
-  chmod +x "$D/bin/codex";rm -f /tmp/codex.tar.gz
+  curl -L -o /tmp/codex.tar.gz \
+    "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
+  tar -xzf /tmp/codex.tar.gz -C /usr/local/bin --strip-components=1
+  chmod +x /usr/local/bin/codex;rm -f /tmp/codex.tar.gz
   echo "  完成"
 fi
 echo "========================================"
@@ -325,6 +327,34 @@ echo "  更新完成！"
 echo "========================================"
 UPD
 chmod +x /usr/local/bin/ai-update
+
+cat > /usr/local/bin/ai-fix << 'FIX'
+#!/bin/bash
+echo "========================================"
+echo "  AI 工具修复"
+echo "========================================"
+if [ ! -f /usr/local/bin/claude-bin ]; then
+  echo "[修复] Claude Code..."
+  V=$(curl -sL "https://downloads.claude.ai/claude-code-releases/stable")
+  curl -L -o /usr/local/bin/claude-bin \
+    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
+  chmod +x /usr/local/bin/claude-bin
+  echo "  $(claude-bin --version)"
+fi
+if [ ! -f /usr/local/bin/codex ]; then
+  echo "[修复] Codex CLI..."
+  T=$(curl -sL "https://api.github.com/repos/openai/codex/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
+  curl -L -o /tmp/codex.tar.gz \
+    "https://github.com/openai/codex/releases/download/${T}/codex-aarch64-unknown-linux-musl.tar.gz"
+  tar -xzf /tmp/codex.tar.gz -C /usr/local/bin --strip-components=1
+  chmod +x /usr/local/bin/codex;rm -f /tmp/codex.tar.gz
+  echo "  完成"
+fi
+echo "========================================"
+echo "  修复完成！"
+echo "========================================"
+FIX
+chmod +x /usr/local/bin/ai-fix
 
 clear
 echo "========================================"
@@ -337,6 +367,7 @@ echo "  可用命令:"
 [ "$D" = true ] && echo "    claude-bin    - Claude Code (DeepSeek)"
 echo "    ai-start      - 交互式启动菜单"
 echo "    ai-update     - 更新所有工具"
+echo "    ai-fix        - 修复丢失的工具"
 echo ""
 echo "  手动配置 DeepSeek:"
 echo "    nano ~/.bashrc"
