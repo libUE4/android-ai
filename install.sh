@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
-# Termux AI 编程工具一键安装脚本 (v2.0)
-# 选项1: Claude Code + 第三方平台（安装+配置Key）
+# Termux AI 编程工具一键安装脚本 (Final)
+# 选项1: Claude Code + DeepSeek（安装+配置Key，自动获取模型）
 # 选项2: Codex CLI（只安装，不配置Key）
 # 选项3: 全部安装
 # ============================================================
@@ -111,14 +111,14 @@ safe_read_key() {
     eval "$varname=\"$key\""
 }
 
-fetch_models() {
-    local base_url="$1"
-    local api_key="$2"
+# 获取 DeepSeek 可用模型
+fetch_deepseek_models() {
+    local api_key="$1"
     local models=""
     if [ -n "$api_key" ] && command -v curl &>/dev/null; then
-        info "正在获取可用模型..." >&2
+        info "正在获取 DeepSeek 可用模型..." >&2
         local resp
-        resp=$(curl -s -m 15 "${base_url}/models" \
+        resp=$(curl -s -m 15 "https://api.deepseek.com/models" \
             -H "Authorization: Bearer $api_key" \
             -H "Content-Type: application/json" 2>/dev/null) || true
         if [ -n "$resp" ]; then
@@ -154,8 +154,8 @@ echo -e "${C}     AI 工具安装向导${N}"
 echo "========================================"
 echo ""
 echo "  选择工具（可多选）:"
-echo "  [1] Claude Code + 第三方平台  -- 安装 + 配置 Key"
-echo "  [2] Codex CLI (OpenAI)        -- 只安装，不配置 Key"
+echo "  [1] Claude Code + DeepSeek  -- 安装 + 配置 DeepSeek Key"
+echo "  [2] Codex CLI (OpenAI)      -- 只安装，不配置 Key"
 echo "  [3] 全部安装"
 read -p "  输入: " choices
 
@@ -165,7 +165,7 @@ case "$choices" in *2*) X=true ;; esac
 case "$choices" in *3*) C=true;X=true ;; esac
 [ "$C" = false ] && [ "$X" = false ] && { err "未选择"; exit 1; }
 
-# ==================== 安装 Claude Code + 第三方平台 ====================
+# ==================== 安装 Claude Code + DeepSeek ====================
 if [ "$C" = true ]; then
   echo ""; step "安装 Claude Code..."
 
@@ -200,22 +200,22 @@ if [ "$C" = true ]; then
   echo '{"hasCompletedOnboarding":true}' > ~/.claude.json
   ok "Claude Code: $(claude-bin --version)"
 
-  # 配置第三方平台
-  echo ""; info "第三方平台配置"
-  echo "  示例: https://tokenshengsheng.com"
-  echo "  示例: https://api.deepseek.com"
-  read -p "  请输入 API Base URL: " base_url
-  [ -z "$base_url" ] && { err "URL 不能为空"; exit 1; }
+  # 配置 DeepSeek
+  echo ""; info "DeepSeek 配置"
+  echo "  获取 Key: https://platform.deepseek.com/api_keys"
+  safe_read_key "  请输入 DeepSeek Key: " deepseek_key
+  [ -z "$deepseek_key" ] && { err "Key 不能为空"; exit 1; }
 
-  safe_read_key "  请输入 API Key: " api_key
-  [ -z "$api_key" ] && { err "Key 不能为空"; exit 1; }
-
-  MODELS=$(fetch_models "$base_url" "$api_key")
+  # 自动获取模型
+  MODELS=$(fetch_deepseek_models "$deepseek_key")
 
   if [ -z "$MODELS" ]; then
     warn "无法自动获取模型列表"
-    read -p "  请手动输入模型名称: " M
-    [ -z "$M" ] && M="default"
+    echo "  [1] deepseek-chat     (通用对话，推荐)"
+    echo "  [2] deepseek-reasoner (推理模型)"
+    echo "  [3] deepseek-coder    (代码专用)"
+    read -p "  请选择模型 [1-3,默认1]: " m
+    case "$m" in 2) M="deepseek-reasoner" ;; 3) M="deepseek-coder" ;; *) M="deepseek-chat" ;; esac
   else
     echo ""
     echo "  可用模型列表:"
@@ -236,13 +236,13 @@ if [ "$C" = true ]; then
     ok "选择的模型: $M"
   fi
 
-  # 写入配置（只用 AUTH_TOKEN）
+  # 写入配置（只用 AUTH_TOKEN，避免冲突）
   sed -i '/# === AI CFG ===/,/# === END ===/d' ~/.bashrc 2>/dev/null || true
   cat >> ~/.bashrc << EOF
 
 # === AI CFG ===
-export ANTHROPIC_BASE_URL="$base_url"
-export ANTHROPIC_AUTH_TOKEN="$api_key"
+export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
+export ANTHROPIC_AUTH_TOKEN="$deepseek_key"
 export ANTHROPIC_MODEL="$M"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$M"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$M"
@@ -252,7 +252,7 @@ export CLAUDE_CODE_EFFORT_LEVEL="max"
 # === END ===
 EOF
   source ~/.bashrc
-  ok "第三方平台配置完成"
+  ok "DeepSeek 配置完成 (模型: $M)"
 fi
 
 # ==================== 安装 Codex CLI ====================
@@ -279,10 +279,10 @@ command -v codex &>/dev/null && HX=true
 [ -n "$ANTHROPIC_BASE_URL" ] && HD=true
 [ "$HC" = true ] && echo "  v Claude Code"
 [ "$HX" = true ] && echo "  v Codex CLI"
-[ "$HD" = true ] && echo "  v 第三方平台已配置"
+[ "$HD" = true ] && echo "  v DeepSeek 已配置"
 echo ""
 i=1
-[ "$HC" = true ] && [ "$HD" = true ] && { echo "  [$i] Claude(第三方)";((i++)); }
+[ "$HC" = true ] && [ "$HD" = true ] && { echo "  [$i] Claude(DeepSeek)";((i++)); }
 [ "$HX" = true ] && { echo "  [$i] Codex CLI";((i++)); }
 echo "  [0] 退出"
 echo ""
@@ -354,7 +354,7 @@ echo -e "${G}     安装完成！${N}"
 echo "========================================"
 echo ""
 echo "  可用命令:"
-[ "$C" = true ] && echo "    claude-bin    - Claude Code (第三方平台)"
+[ "$C" = true ] && echo "    claude-bin    - Claude Code (DeepSeek)"
 [ "$X" = true ] && echo "    codex         - Codex CLI (首次运行 codex login)"
 echo "    ai-start      - 交互式启动菜单"
 echo "    ai-update     - 更新所有工具"
