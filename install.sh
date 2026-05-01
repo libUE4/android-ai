@@ -1,13 +1,9 @@
 #!/bin/bash
 # ============================================================
-# Termux AI 编程工具一键安装脚本 (GitHub 最终版)
-# 功能：国内镜像选择 + proot-distro Debian + Claude Code + 第三方平台配置
-# 修复：
-#   1. npm install 崩溃 → 使用 --ignore-scripts + 手动下载二进制
-#   2. 二进制丢失 → 直接复制到 /usr/local/bin/
-#   3. 模型获取被 grep 污染 → info 输出到 stderr
-#   4. Auth 冲突 → 只用 ANTHROPIC_AUTH_TOKEN，不用 API_KEY
-#   5. 平台不兼容 → 支持任意 OpenAI/Anthropic 兼容平台，自动获取模型
+# Termux AI 编程工具一键安装脚本 (v2.0)
+# 选项1: Claude Code + 第三方平台（安装+配置Key）
+# 选项2: Codex CLI（只安装，不配置Key）
+# 选项3: 全部安装
 # ============================================================
 
 set -e
@@ -20,7 +16,6 @@ warn(){ echo -e "${Y}[WARN]${N} $1"; }
 err(){ echo -e "${R}[ERROR]${N} $1"; }
 step(){ echo -e "${C}[STEP]${N} $1"; }
 
-# 安全的密码输入
 safe_read_key() {
     local prompt="$1"
     local varname="$2"
@@ -33,7 +28,7 @@ safe_read_key() {
         echo ""
     else
         echo ""
-        echo -e "${Y}[注意] 当前环境不支持隐藏输入${N}"
+        echo -e "${Y}[注意] 不支持隐藏输入${N}"
         echo -n "$prompt"
         read key
     fi
@@ -116,7 +111,6 @@ safe_read_key() {
     eval "$varname=\"$key\""
 }
 
-# 获取第三方平台可用模型
 fetch_models() {
     local base_url="$1"
     local api_key="$2"
@@ -160,27 +154,23 @@ echo -e "${C}     AI 工具安装向导${N}"
 echo "========================================"
 echo ""
 echo "  选择工具（可多选）:"
-echo "  [1] Claude Code (官方)  -- 只安装，不配置 Key"
-echo "  [2] Codex CLI (OpenAI)  -- 只安装，不配置 Key"
-echo "  [3] Claude + 第三方平台  -- 安装 + 配置平台 Key"
-echo "  [4] 全部安装"
+echo "  [1] Claude Code + 第三方平台  -- 安装 + 配置 Key"
+echo "  [2] Codex CLI (OpenAI)        -- 只安装，不配置 Key"
+echo "  [3] 全部安装"
 read -p "  输入: " choices
 
-C=false; X=false; D=false
+C=false; X=false
 case "$choices" in *1*) C=true ;; esac
 case "$choices" in *2*) X=true ;; esac
-case "$choices" in *3*) D=true ;; esac
-case "$choices" in *4*) C=true;X=true;D=true ;; esac
-[ "$C" = false ] && [ "$X" = false ] && [ "$D" = false ] && { err "未选择"; exit 1; }
+case "$choices" in *3*) C=true;X=true ;; esac
+[ "$C" = false ] && [ "$X" = false ] && { err "未选择"; exit 1; }
 
-# ==================== 安装 Claude Code ====================
-if [ "$C" = true ] || [ "$D" = true ]; then
+# ==================== 安装 Claude Code + 第三方平台 ====================
+if [ "$C" = true ]; then
   echo ""; step "安装 Claude Code..."
 
-  # 只装 npm 包（不触发 postinstall，避免崩溃）
   npm install -g @anthropic-ai/claude-code --ignore-scripts
 
-  # 手动下载二进制（绕过平台检测 + 避免 npm postinstall 崩溃）
   V=$(curl -sL --max-time 10 "https://downloads.claude.ai/claude-code-releases/stable" || echo "2.1.118")
   info "版本: $V"
 
@@ -209,31 +199,8 @@ if [ "$C" = true ] || [ "$D" = true ]; then
   chmod +x /usr/local/bin/claude-bin
   echo '{"hasCompletedOnboarding":true}' > ~/.claude.json
   ok "Claude Code: $(claude-bin --version)"
-fi
 
-# ==================== 安装 Codex CLI ====================
-if [ "$X" = true ]; then
-  echo ""; step "安装 Codex CLI..."
-
-  # 官方 install.sh 最稳
-  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
-  export PATH="/root/.local/bin:$PATH"
-  ok "Codex CLI 安装完成"
-fi
-
-# ==================== 配置 API Key ====================
-echo ""; step "配置 API Key..."
-cp ~/.bashrc ~/.bashrc.bak.$(date +%s) 2>/dev/null || true
-sed -i '/# === AI CFG ===/,/# === END ===/d' ~/.bashrc 2>/dev/null || true
-CFG="\n# === AI CFG ===\n"
-
-# Claude 官方：只安装，不配置 Key
-if [ "$C" = true ]; then
-  info "Claude Code (官方) 已安装，首次运行请自行登录"
-fi
-
-# 第三方平台配置
-if [ "$D" = true ]; then
+  # 配置第三方平台
   echo ""; info "第三方平台配置"
   echo "  示例: https://tokenshengsheng.com"
   echo "  示例: https://api.deepseek.com"
@@ -243,7 +210,6 @@ if [ "$D" = true ]; then
   safe_read_key "  请输入 API Key: " api_key
   [ -z "$api_key" ] && { err "Key 不能为空"; exit 1; }
 
-  # 自动获取模型
   MODELS=$(fetch_models "$base_url" "$api_key")
 
   if [ -z "$MODELS" ]; then
@@ -270,26 +236,32 @@ if [ "$D" = true ]; then
     ok "选择的模型: $M"
   fi
 
-  # 写入配置（只用 AUTH_TOKEN，避免与 API_KEY 冲突）
-  CFG+="export ANTHROPIC_BASE_URL=\"$base_url\"\n"
-  CFG+="export ANTHROPIC_AUTH_TOKEN=\"$api_key\"\n"
-  CFG+="export ANTHROPIC_MODEL=\"$M\"\n"
-  CFG+="export ANTHROPIC_DEFAULT_OPUS_MODEL=\"$M\"\n"
-  CFG+="export ANTHROPIC_DEFAULT_SONNET_MODEL=\"$M\"\n"
-  CFG+="export ANTHROPIC_DEFAULT_HAIKU_MODEL=\"$M\"\n"
-  CFG+="export CLAUDE_CODE_SUBAGENT_MODEL=\"$M\"\n"
-  CFG+="export CLAUDE_CODE_EFFORT_LEVEL=\"max\"\n"
+  # 写入配置（只用 AUTH_TOKEN）
+  sed -i '/# === AI CFG ===/,/# === END ===/d' ~/.bashrc 2>/dev/null || true
+  cat >> ~/.bashrc << EOF
+
+# === AI CFG ===
+export ANTHROPIC_BASE_URL="$base_url"
+export ANTHROPIC_AUTH_TOKEN="$api_key"
+export ANTHROPIC_MODEL="$M"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$M"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$M"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$M"
+export CLAUDE_CODE_SUBAGENT_MODEL="$M"
+export CLAUDE_CODE_EFFORT_LEVEL="max"
+# === END ===
+EOF
+  source ~/.bashrc
   ok "第三方平台配置完成"
 fi
 
-# Codex：只安装，不配置 Key
+# ==================== 安装 Codex CLI ====================
 if [ "$X" = true ]; then
-  info "Codex CLI 已安装，首次运行请执行: codex login"
+  echo ""; step "安装 Codex CLI..."
+  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
+  export PATH="/root/.local/bin:$PATH"
+  ok "Codex CLI 安装完成"
 fi
-
-CFG+="# === END ===\n"
-echo -e "$CFG" >> ~/.bashrc
-source ~/.bashrc
 
 # ==================== 创建启动器 ====================
 echo ""; step "创建启动器..."
@@ -307,18 +279,16 @@ command -v codex &>/dev/null && HX=true
 [ -n "$ANTHROPIC_BASE_URL" ] && HD=true
 [ "$HC" = true ] && echo "  v Claude Code"
 [ "$HX" = true ] && echo "  v Codex CLI"
-[ "$HD" = true ] && echo "  v 第三方平台"
+[ "$HD" = true ] && echo "  v 第三方平台已配置"
 echo ""
 i=1
-[ "$HC" = true ] && [ "$HD" = false ] && { echo "  [$i] Claude(官方)";((i++)); }
-[ "$HD" = true ] && { echo "  [$i] Claude(第三方)";((i++)); }
+[ "$HC" = true ] && [ "$HD" = true ] && { echo "  [$i] Claude(第三方)";((i++)); }
 [ "$HX" = true ] && { echo "  [$i] Codex CLI";((i++)); }
 echo "  [0] 退出"
 echo ""
 read -p "  选择: " ch
 i=1
-[ "$HC" = true ] && [ "$HD" = false ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
-[ "$HD" = true ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
+[ "$HC" = true ] && [ "$HD" = true ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
 [ "$HX" = true ] && { [ "$ch" = "$i" ] && { codex;exit; };((i++)); }
 [ "$ch" = "0" ] && exit
 echo -e "${Y}无效选择${N}"
@@ -384,9 +354,8 @@ echo -e "${G}     安装完成！${N}"
 echo "========================================"
 echo ""
 echo "  可用命令:"
-[ "$C" = true ] && echo "    claude-bin    - Claude Code (官方，首次运行自行登录)"
+[ "$C" = true ] && echo "    claude-bin    - Claude Code (第三方平台)"
 [ "$X" = true ] && echo "    codex         - Codex CLI (首次运行 codex login)"
-[ "$D" = true ] && echo "    claude-bin    - Claude Code (第三方平台)"
 echo "    ai-start      - 交互式启动菜单"
 echo "    ai-update     - 更新所有工具"
 echo "    ai-fix        - 修复丢失的工具"
