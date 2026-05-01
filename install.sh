@@ -1,10 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Termux AI 编程工具一键安装脚本 (v3)
-# 规则：官方 Claude / Codex 只安装，不配置 Key
-#       只有 DeepSeek 需要配置 Key 和选择模型
-# ============================================================
-
+# Termux AI 编程工具一键安装脚本
 set -e
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -115,18 +111,21 @@ safe_read_key() {
 fetch_deepseek_models() {
     local api_key="$1"
     local models=""
+    
     if [ -n "$api_key" ] && command -v curl &>/dev/null; then
-        info "正在获取 DeepSeek 可用模型..."
         local resp
         resp=$(curl -s -m 10 "https://api.deepseek.com/models" \
             -H "Authorization: Bearer $api_key" \
             -H "Content-Type: application/json" 2>/dev/null) || true
+        
         if [ -n "$resp" ]; then
             models=$(echo "$resp" | grep -oP '"id":\s*"\K[^"]+' 2>/dev/null | sort -u | tr '\n' ' ')
         fi
     fi
+    
     echo "$models"
 }
+
 
 step "配置软件源..."
 if [ -n "APT_URL_PLACEHOLDER" ]; then
