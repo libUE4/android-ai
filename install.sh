@@ -1,389 +1,208 @@
 #!/bin/bash
 # ============================================================
-# Termux AI 编程工具一键安装脚本 (Final)
-# 选项1: Claude Code + DeepSeek（安装+配置Key，自动获取模型）
-# 选项2: Codex CLI（只安装，不配置Key）
-# 选项3: 全部安装
+# Termux Debian 容器一键安装脚本
 # ============================================================
 
-set -e
+set -Eeuo pipefail
 
-R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
-B='\033[0;34m'; C='\033[0;36m'; N='\033[0m'
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
+  B='\033[0;34m'; C='\033[0;36m'; N='\033[0m'
+else
+  R=''; G=''; Y=''; B=''; C=''; N=''
+fi
+
 info(){ echo -e "${B}[INFO]${N} $1"; }
 ok(){ echo -e "${G}[OK]${N} $1"; }
 warn(){ echo -e "${Y}[WARN]${N} $1"; }
-err(){ echo -e "${R}[ERROR]${N} $1"; }
+err(){ echo -e "${R}[ERROR]${N} $1" >&2; }
 step(){ echo -e "${C}[STEP]${N} $1"; }
 
-safe_read_key() {
-    local prompt="$1"
-    local varname="$2"
-    local key=""
-    if command -v stty &>/dev/null; then
-        echo -n "$prompt"
-        stty -echo 2>/dev/null
-        read key
-        stty echo 2>/dev/null
-        echo ""
-    else
-        echo ""
-        echo -e "${Y}[注意] 不支持隐藏输入${N}"
-        echo -n "$prompt"
-        read key
-    fi
-    eval "$varname=\"$key\""
+on_error(){
+  local line="$1"
+  err "执行失败：第 ${line} 行"
+  echo "可尝试：" >&2
+  echo "  1. 检查网络" >&2
+  echo "  2. 执行 termux-change-repo 更换软件源" >&2
+  echo "  3. 重新运行本脚本" >&2
+}
+trap 'on_error $LINENO' ERR
+
+usage(){
+  cat <<'EOF'
+用法:
+  bash install_container_only.sh [选项]
+
+选项:
+  -h, --help         显示帮助
+  --skip-update      跳过 pkg update
+  --force-nb         如果 nb 命令已存在，直接覆盖，不备份
+
+安装完成后进入 Debian 容器:
+  nb
+
+执行 Debian 内命令:
+  nb -- bash -lc 'cat /etc/os-release'
+EOF
 }
 
-clear
+confirm_continue(){
+  local prompt="$1"
+  local answer=""
+  if [ ! -t 0 ]; then
+    return 0
+  fi
+  read -r -p "$prompt" answer || true
+  case "$answer" in
+    n|N|no|NO|No) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+SKIP_UPDATE=false
+FORCE_NB=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --skip-update)
+      SKIP_UPDATE=true
+      ;;
+    --force-nb)
+      FORCE_NB=true
+      ;;
+    *)
+      err "未知选项: $1"
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+[ -t 1 ] && clear || true
 echo "========================================"
-echo -e "${C}  AI 编程工具一键安装${N}"
+echo -e "${C}  Termux Debian 容器一键安装${N}"
 echo "========================================"
 echo ""
 
-[ -z "$TERMUX_VERSION" ] && [ ! -d "/data/data/com.termux" ] && { err "请在 Termux 运行"; exit 1; }
+if [ -z "${TERMUX_VERSION:-}" ] && [ ! -d "/data/data/com.termux" ]; then
+  err "请在 Termux 运行"
+  exit 1
+fi
 
-# ==================== 国内路线选择 ====================
-echo -e "${C}  选择国内加速路线:${N}"
-echo "  [1] 阿里云  [2] 清华源  [3] 中科大  [4] 腾讯云  [5] 官方源"
-read -p "  输入[1-5]: " route
-
-NPM_REG="https://registry.npmjs.org"; APT_URL=""; NODE_URL="https://deb.nodesource.com/setup_20.x"
-case "$route" in
-  1) NPM_REG="https://registry.npmmirror.com"; APT_URL="https://mirrors.aliyun.com/debian"; info "路线: 阿里云" ;;
-  2) NPM_REG="https://registry.npmmirror.com"; APT_URL="https://mirrors.tuna.tsinghua.edu.cn/debian"; info "路线: 清华" ;;
-  3) NPM_REG="https://registry.npmmirror.com"; APT_URL="https://mirrors.ustc.edu.cn/debian"; info "路线: 中科大" ;;
-  4) NPM_REG="https://mirrors.cloud.tencent.com/npm"; APT_URL="https://mirrors.cloud.tencent.com/debian"; info "路线: 腾讯云" ;;
-  *) info "路线: 官方源" ;;
-esac
+if ! command -v pkg >/dev/null 2>&1; then
+  err "未找到 pkg 命令，请确认当前环境是 Termux"
+  exit 1
+fi
 
 ARCH=$(uname -m)
-[ "$ARCH" != "aarch64" ] && { warn "架构: $ARCH"; read -p "继续? [Y/n] " c; [ "$c" = "n" ] && exit 1; }
+case "$ARCH" in
+  aarch64|arm64)
+    ok "当前架构: $ARCH"
+    ;;
+  *)
+    warn "当前架构: $ARCH，不是常见 Android arm64 架构"
+    confirm_continue "仍然继续? [Y/n] " || exit 1
+    ;;
+esac
 
-# ==================== Termux ====================
-echo ""; step "[1/3] 更新 Termux..."
-pkg update -y
-ok "Termux 已更新"
+PREFIX_DIR="${PREFIX:-/data/data/com.termux/files/usr}"
+BIN_DIR="$PREFIX_DIR/bin"
+DEBIAN_ROOT="$PREFIX_DIR/var/lib/proot-distro/installed-rootfs/debian"
+NB_CMD="$BIN_DIR/nb"
+NB_MARKER="# nb-debian-container-launcher"
 
-echo ""; step "[2/3] 安装 proot-distro..."
-command -v proot-distro &>/dev/null || pkg install proot-distro -y
-ok "proot-distro 就绪"
+check_space(){
+  local avail_kb=""
+  avail_kb=$(df -Pk "$PREFIX_DIR" 2>/dev/null | awk 'NR==2 {print $4}') || true
+  if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 1048576 ]; then
+    warn "可用空间小于 1GB，Debian 安装可能失败"
+    confirm_continue "仍然继续? [Y/n] " || exit 1
+  fi
+}
 
-echo ""; step "[3/3] 安装/检查 Debian..."
-DEBIAN_ROOT="/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/debian"
+write_nb_launcher(){
+  mkdir -p "$BIN_DIR"
+
+  if [ -e "$NB_CMD" ]; then
+    if grep -qF "$NB_MARKER" "$NB_CMD" 2>/dev/null; then
+      info "检测到旧 nb 启动器，将更新"
+    elif [ "$FORCE_NB" = true ]; then
+      warn "检测到已有 nb 命令，按 --force-nb 要求直接覆盖"
+    else
+      local backup="${NB_CMD}.bak.$(date +%Y%m%d-%H%M%S)"
+      warn "检测到已有 nb 命令，已备份到：$backup"
+      mv "$NB_CMD" "$backup"
+    fi
+  fi
+
+  cat > "$NB_CMD" <<'NBEOF'
+#!/bin/bash
+# nb-debian-container-launcher
+set -e
+
+if ! command -v proot-distro >/dev/null 2>&1; then
+  echo "[ERROR] 未找到 proot-distro，请先运行安装脚本" >&2
+  exit 1
+fi
+
+exec proot-distro login debian "$@"
+NBEOF
+  chmod +x "$NB_CMD"
+}
+
+echo ""
+step "[1/5] 检查可用空间..."
+check_space
+ok "空间检查完成"
+
+echo ""
+step "[2/5] 更新 Termux 包索引..."
+if [ "$SKIP_UPDATE" = true ]; then
+  warn "已按参数跳过 pkg update"
+else
+  pkg update -y
+  ok "Termux 包索引已更新"
+fi
+
+echo ""
+step "[3/5] 安装/检查 proot-distro..."
+if command -v proot-distro >/dev/null 2>&1; then
+  ok "proot-distro 已安装"
+else
+  pkg install -y proot-distro
+  ok "proot-distro 安装完成"
+fi
+
+echo ""
+step "[4/5] 安装/检查 Debian 容器..."
 if [ -d "$DEBIAN_ROOT" ]; then
-  warn "Debian 已存在，跳过安装"
+  warn "Debian 容器已存在，跳过安装"
 else
   proot-distro install debian
-  ok "Debian 安装完成"
+  ok "Debian 容器安装完成"
 fi
-ok "Debian 就绪"
 
-# ==================== 写入容器脚本 ====================
-step "准备容器脚本..."
-mkdir -p "$DEBIAN_ROOT/tmp"
-
-cat > "$DEBIAN_ROOT/tmp/install.sh" << 'INSIDE'
-#!/bin/bash
-set -e
-R='\033[0;31m';G='\033[0;32m';Y='\033[1;33m';B='\033[0;34m';C='\033[0;36m';N='\033[0m'
-info(){ echo -e "${B}[INFO]${N} $1"; }
-ok(){ echo -e "${G}[OK]${N} $1"; }
-warn(){ echo -e "${Y}[WARN]${N} $1"; }
-step(){ echo -e "${C}[STEP]${N} $1"; }
-
-safe_read_key() {
-    local prompt="$1"
-    local varname="$2"
-    local key=""
-    if command -v stty &>/dev/null; then
-        echo -n "$prompt"
-        stty -echo 2>/dev/null
-        read key
-        stty echo 2>/dev/null
-        echo ""
-    else
-        echo ""
-        echo -e "${Y}[注意] 不支持隐藏输入${N}"
-        echo -n "$prompt"
-        read key
-    fi
-    eval "$varname=\"$key\""
-}
-
-# 获取 DeepSeek 可用模型
-fetch_deepseek_models() {
-    local api_key="$1"
-    local models=""
-    if [ -n "$api_key" ] && command -v curl &>/dev/null; then
-        info "正在获取 DeepSeek 可用模型..." >&2
-        local resp
-        resp=$(curl -s -m 15 "https://api.deepseek.com/models" \
-            -H "Authorization: Bearer $api_key" \
-            -H "Content-Type: application/json" 2>/dev/null) || true
-        if [ -n "$resp" ]; then
-            models=$(echo "$resp" | grep -oP '"id":\s*"\K[^"]+' 2>/dev/null | sort -u | tr '\n' ' ')
-        fi
-    fi
-    echo "$models"
-}
-
-step "配置软件源..."
-if [ -n "APT_URL_PLACEHOLDER" ]; then
-  cat > /etc/apt/sources.list << APTEOF
-deb APT_URL_PLACEHOLDER trixie main contrib non-free non-free-firmware
-deb APT_URL_PLACEHOLDER trixie-updates main contrib non-free non-free-firmware
-APTEOF
-fi
-apt update && apt install -y curl git ca-certificates locales
-locale-gen en_US.UTF-8 zh_CN.UTF-8 2>/dev/null || true
-echo 'export LANG=en_US.UTF-8' >> ~/.bashrc
-
-step "安装 Node.js..."
-if ! command -v node &>/dev/null; then
-  curl -fsSL NODE_URL_PLACEHOLDER | bash -
-  apt install -y nodejs
-fi
-ok "Node: $(node --version), npm: $(npm --version)"
-npm config set registry NPM_REG_PLACEHOLDER
-ok "npm: NPM_REG_PLACEHOLDER"
-
-clear
-echo "========================================"
-echo -e "${C}     AI 工具安装向导${N}"
-echo "========================================"
 echo ""
-echo "  选择工具（可多选）:"
-echo "  [1] Claude Code + DeepSeek  -- 安装 + 配置 DeepSeek Key"
-echo "  [2] Codex CLI (OpenAI)      -- 只安装，不配置 Key"
-echo "  [3] 全部安装"
-read -p "  输入: " choices
-
-C=false; X=false
-case "$choices" in *1*) C=true ;; esac
-case "$choices" in *2*) X=true ;; esac
-case "$choices" in *3*) C=true;X=true ;; esac
-[ "$C" = false ] && [ "$X" = false ] && { err "未选择"; exit 1; }
-
-# ==================== 安装 Claude Code + DeepSeek ====================
-if [ "$C" = true ]; then
-  echo ""; step "安装 Claude Code..."
-
-  npm install -g @anthropic-ai/claude-code --ignore-scripts
-
-  V=$(curl -sL --max-time 10 "https://downloads.claude.ai/claude-code-releases/stable" || echo "2.1.118")
-  info "版本: $V"
-
-  mkdir -p /usr/local/bin
-  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
-    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
-  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
-    "https://ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
-  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
-    "https://mirror.ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null
-
-  if [ ! -f /usr/local/bin/claude-bin ] || [ ! -s /usr/local/bin/claude-bin ]; then
-    err "Claude 二进制下载失败"
-    echo ""
-    echo "请手动下载："
-    echo "  1. 手机浏览器打开："
-    echo "     https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude"
-    echo "  2. 放到手机 Download 文件夹"
-    echo "  3. 执行：termux-setup-storage"
-    echo "  4. 执行：cp ~/storage/downloads/claude /usr/local/bin/claude-bin"
-    echo "  5. 执行：chmod +x /usr/local/bin/claude-bin"
-    echo ""
-    exit 1
-  fi
-
-  chmod +x /usr/local/bin/claude-bin
-  echo '{"hasCompletedOnboarding":true}' > ~/.claude.json
-  ok "Claude Code: $(claude-bin --version)"
-
-  # 配置 DeepSeek
-  echo ""; info "DeepSeek 配置"
-  echo "  获取 Key: https://platform.deepseek.com/api_keys"
-  safe_read_key "  请输入 DeepSeek Key: " deepseek_key
-  [ -z "$deepseek_key" ] && { err "Key 不能为空"; exit 1; }
-
-  # 自动获取模型
-  MODELS=$(fetch_deepseek_models "$deepseek_key")
-
-  if [ -z "$MODELS" ]; then
-    warn "无法自动获取模型列表"
-    echo "  [1] deepseek-chat     (通用对话，推荐)"
-    echo "  [2] deepseek-reasoner (推理模型)"
-    echo "  [3] deepseek-coder    (代码专用)"
-    read -p "  请选择模型 [1-3,默认1]: " m
-    case "$m" in 2) M="deepseek-reasoner" ;; 3) M="deepseek-coder" ;; *) M="deepseek-chat" ;; esac
-  else
-    echo ""
-    echo "  可用模型列表:"
-    i=1
-    ARR=()
-    for m in $MODELS; do
-      echo "    [$i] $m"
-      ARR+=("$m")
-      ((i++))
-    done
-    echo ""
-    read -p "  请选择模型编号 [1-$((i-1)), 默认1]: " idx
-    [ -z "$idx" ] && idx=1
-    [[ "$idx" =~ ^[0-9]+$ ]] || idx=1
-    [ "$idx" -lt 1 ] && idx=1
-    [ "$idx" -ge "$i" ] && idx=1
-    M="${ARR[$((idx-1))]}"
-    ok "选择的模型: $M"
-  fi
-
-  # 写入配置（只用 AUTH_TOKEN，避免冲突）
-  sed -i '/# === AI CFG ===/,/# === END ===/d' ~/.bashrc 2>/dev/null || true
-  cat >> ~/.bashrc << EOF
-
-# === AI CFG ===
-export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
-export ANTHROPIC_AUTH_TOKEN="$deepseek_key"
-export ANTHROPIC_MODEL="$M"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="$M"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="$M"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="$M"
-export CLAUDE_CODE_SUBAGENT_MODEL="$M"
-export CLAUDE_CODE_EFFORT_LEVEL="max"
-# === END ===
-EOF
-  source ~/.bashrc
-  ok "DeepSeek 配置完成 (模型: $M)"
-fi
-
-# ==================== 安装 Codex CLI ====================
-if [ "$X" = true ]; then
-  echo ""; step "安装 Codex CLI..."
-  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
-  export PATH="/root/.local/bin:$PATH"
-  ok "Codex CLI 安装完成"
-fi
-
-# ==================== 创建启动器 ====================
-echo ""; step "创建启动器..."
-cat > /usr/local/bin/ai-start << 'START'
-#!/bin/bash
-G='\033[0;32m';C='\033[0;36m';Y='\033[1;33m';N='\033[0m'
-clear
-echo "========================================"
-echo -e "${C}     AI 工具启动器${N}"
-echo "========================================"
-echo ""
-HC=false;HX=false;HD=false
-command -v claude-bin &>/dev/null && HC=true
-command -v codex &>/dev/null && HX=true
-[ -n "$ANTHROPIC_BASE_URL" ] && HD=true
-[ "$HC" = true ] && echo "  v Claude Code"
-[ "$HX" = true ] && echo "  v Codex CLI"
-[ "$HD" = true ] && echo "  v DeepSeek 已配置"
-echo ""
-i=1
-[ "$HC" = true ] && [ "$HD" = true ] && { echo "  [$i] Claude(DeepSeek)";((i++)); }
-[ "$HX" = true ] && { echo "  [$i] Codex CLI";((i++)); }
-echo "  [0] 退出"
-echo ""
-read -p "  选择: " ch
-i=1
-[ "$HC" = true ] && [ "$HD" = true ] && { [ "$ch" = "$i" ] && { claude-bin;exit; };((i++)); }
-[ "$HX" = true ] && { [ "$ch" = "$i" ] && { codex;exit; };((i++)); }
-[ "$ch" = "0" ] && exit
-echo -e "${Y}无效选择${N}"
-START
-chmod +x /usr/local/bin/ai-start
-
-cat > /usr/local/bin/ai-update << 'UPD'
-#!/bin/bash
-set -e
-echo "========================================"
-echo "  AI 工具更新"
-echo "========================================"
-if command -v claude-bin &>/dev/null; then
-  echo "[1/2] 更新 Claude..."
-  V=$(curl -sL --max-time 10 "https://downloads.claude.ai/claude-code-releases/stable" || echo "2.1.118")
-  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
-    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
-  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
-    "https://ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null
-  chmod +x /usr/local/bin/claude-bin 2>/dev/null || true
-  echo "  $(claude-bin --version 2>/dev/null || echo "失败")"
-fi
-if command -v codex &>/dev/null; then
-  echo "[2/2] 更新 Codex..."
-  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
-  echo "  完成"
-fi
-echo "========================================"
-echo "  更新完成！"
-echo "========================================"
-UPD
-chmod +x /usr/local/bin/ai-update
-
-cat > /usr/local/bin/ai-fix << 'FIX'
-#!/bin/bash
-echo "========================================"
-echo "  AI 工具修复"
-echo "========================================"
-if [ ! -f /usr/local/bin/claude-bin ] || [ ! -s /usr/local/bin/claude-bin ]; then
-  echo "[修复] Claude Code..."
-  V=$(curl -sL --max-time 10 "https://downloads.claude.ai/claude-code-releases/stable" || echo "2.1.118")
-  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
-    "https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null || \
-  curl -L --max-time 120 -o /usr/local/bin/claude-bin \
-    "https://ghproxy.com/https://downloads.claude.ai/claude-code-releases/${V}/linux-arm64/claude" 2>/dev/null
-  chmod +x /usr/local/bin/claude-bin 2>/dev/null || true
-  echo "  $(claude-bin --version 2>/dev/null || echo "失败")"
-fi
-if [ ! -f /root/.local/bin/codex ] && [ ! -f /usr/local/bin/codex ]; then
-  echo "[修复] Codex CLI..."
-  curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | sh
-  echo "  完成"
-fi
-echo "========================================"
-echo "  修复完成！"
-echo "========================================"
-FIX
-chmod +x /usr/local/bin/ai-fix
-
-clear
-echo "========================================"
-echo -e "${G}     安装完成！${N}"
-echo "========================================"
-echo ""
-echo "  可用命令:"
-[ "$C" = true ] && echo "    claude-bin    - Claude Code (DeepSeek)"
-[ "$X" = true ] && echo "    codex         - Codex CLI (首次运行 codex login)"
-echo "    ai-start      - 交互式启动菜单"
-echo "    ai-update     - 更新所有工具"
-echo "    ai-fix        - 修复丢失的工具"
-echo ""
-echo "  重新进入:"
-echo "    proot-distro login debian"
-echo "    ai-start"
-echo ""
-INSIDE
-
-sed -i "s|APT_URL_PLACEHOLDER|$APT_URL|g" "$DEBIAN_ROOT/tmp/install.sh"
-sed -i "s|NODE_URL_PLACEHOLDER|$NODE_URL|g" "$DEBIAN_ROOT/tmp/install.sh"
-sed -i "s|NPM_REG_PLACEHOLDER|$NPM_REG|g" "$DEBIAN_ROOT/tmp/install.sh"
-
-chmod +x "$DEBIAN_ROOT/tmp/install.sh"
-ok "脚本已准备"
-
-echo ""; step "进入 Debian 安装..."
-info "按提示选择工具和输入信息"
-read -p "按回车继续..."
-proot-distro login debian -- bash /tmp/install.sh
+step "[5/5] 创建 nb 启动命令..."
+write_nb_launcher
+ok "nb 命令已创建：$NB_CMD"
 
 echo ""
 echo "========================================"
-echo -e "${G}  全部完成！${N}"
+echo -e "${G}  容器安装完成！${N}"
 echo "========================================"
 echo ""
-echo "  使用:"
-echo "    proot-distro login debian"
-echo "    ai-start"
+echo "进入 Debian 容器："
+echo "  nb"
+echo ""
+echo "执行 Debian 内命令："
+echo "  nb -- bash -lc 'cat /etc/os-release'"
+echo ""
+echo "常用管理命令："
+echo "  proot-distro login debian    # 原始进入命令"
+echo "  proot-distro remove debian   # 删除 Debian 容器"
 echo ""
