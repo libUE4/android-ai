@@ -31,7 +31,7 @@ trap 'on_error $LINENO' ERR
 usage(){
   cat <<'EOF'
 用法:
-  bash install_container_only.sh [选项]
+  bash install.sh [选项]
 
 选项:
   -h, --help         显示帮助
@@ -41,8 +41,10 @@ usage(){
 安装完成后进入 Debian 容器:
   nb
 
-执行 Debian 内命令:
-  nb -- bash -lc 'cat /etc/os-release'
+进入后可正常执行 Debian 命令。
+
+脚本会自动在 Debian 容器里安装 Node.js。
+
 EOF
 }
 
@@ -154,13 +156,28 @@ NBEOF
   chmod +x "$NB_CMD"
 }
 
+install_nodejs(){
+  proot-distro login debian -- bash -lc '
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt update
+    apt install -y curl ca-certificates gnupg
+    if ! command -v node >/dev/null 2>&1; then
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      apt install -y nodejs
+    fi
+    node --version
+    npm --version
+  '
+}
+
 echo ""
-step "[1/5] 检查可用空间..."
+step "[1/6] 检查可用空间..."
 check_space
 ok "空间检查完成"
 
 echo ""
-step "[2/5] 更新 Termux 包索引..."
+step "[2/6] 更新 Termux 包索引..."
 if [ "$SKIP_UPDATE" = true ]; then
   warn "已按参数跳过 pkg update"
 else
@@ -169,7 +186,7 @@ else
 fi
 
 echo ""
-step "[3/5] 安装/检查 proot-distro..."
+step "[3/6] 安装/检查 proot-distro..."
 if command -v proot-distro >/dev/null 2>&1; then
   ok "proot-distro 已安装"
 else
@@ -178,7 +195,7 @@ else
 fi
 
 echo ""
-step "[4/5] 安装/检查 Debian 容器..."
+step "[4/6] 安装/检查 Debian 容器..."
 if [ -d "$DEBIAN_ROOT" ]; then
   warn "Debian 容器已存在，跳过安装"
 else
@@ -187,7 +204,12 @@ else
 fi
 
 echo ""
-step "[5/5] 创建 nb 启动命令..."
+step "[5/6] 安装/检查 Debian 内 Node.js..."
+install_nodejs
+ok "Node.js 已就绪"
+
+echo ""
+step "[6/6] 创建 nb 启动命令..."
 write_nb_launcher
 ok "nb 命令已创建：$NB_CMD"
 
@@ -199,10 +221,25 @@ echo ""
 echo "进入 Debian 容器："
 echo "  nb"
 echo ""
-echo "执行 Debian 内命令："
-echo "  nb -- bash -lc 'cat /etc/os-release'"
+echo "进入后可正常执行 Debian 命令。"
 echo ""
-echo "常用管理命令："
-echo "  proot-distro login debian    # 原始进入命令"
-echo "  proot-distro remove debian   # 删除 Debian 容器"
+echo "========================================"
+echo -e "${C}  AI 工具安装（可选）${N}"
+echo "========================================"
+echo ""
+echo -e "${Y} Claude Code（Anthropic）${N}"
+echo "  npm install -g @anthropic-ai/claude-code"
+echo "  或: curl -fsSL https://claude.ai/install.sh | bash"
+echo "  启动: claude"
+echo ""
+echo -e "${Y} Codex CLI（OpenAI）${N}"
+echo "  npm install -g @openai/codex"
+echo "  启动: codex"
+echo ""
+echo -e "${Y} 4. NBG Code（NBG）${N}"
+echo "  curl -O https://libUE4.github.io/android-ai/install.sh && bash install.sh"
+echo "  或:"
+echo "  curl -O https://raw.githubusercontent.com/libUE4/android-ai/main/install.sh && bash install.sh"
+echo ""
+echo -e "${Y} 无法安装就使用VPN再安装 ${N}"
 echo ""
